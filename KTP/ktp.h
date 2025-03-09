@@ -1,7 +1,13 @@
-// Name - S.Rishabh
-// Roll number - 22CS10058
+#include "ktp_structures.h"
 
-#include "ktp.h"
+#ifndef KGP_TRANSFER_PROTOCOL
+#define KGP_TRANSFER_PROTOCOL
+
+// int k_socket(int __domain, int __type, int __protocol);
+// int k_bind(int sockid, struct sockaddr_in * source, struct sockaddr_in * destination);
+// int k_sendto(int sockid, struct sockaddr_in * destination, char message[]);
+// int k_recvfrom(int sockid, struct sockaddr_in * destination, char * buff);
+// void k_close(int sockid);
 
 int k_socket(int __domain, int __type, int __protocol) {
 
@@ -43,8 +49,8 @@ int k_socket(int __domain, int __type, int __protocol) {
         addr[sockid].rwnd.window_size = 10;
 
         for(int i=0; i<10; i++) {
-            addr[sockid].rwnd.expmsg[i] = 1;
             addr[sockid].swnd.unack[i] = 0;
+            addr[sockid].rwnd.seq_map[i] = 0;
             bzero(&addr[sockid].send_buffer[i], sizeof(addr[sockid].send_buffer[i]));
             bzero(&addr[sockid].receive_buffer[i], sizeof(addr[sockid].receive_buffer[i]));
         }
@@ -138,12 +144,11 @@ int k_recvfrom(int sockid, struct sockaddr_in * destination, char * buff) {
     int index = (addr[sockid].rwnd.rb_start + 1)%10;
     addr[sockid].rwnd.rb_start = index;
     addr[sockid].rwnd.window_size++;
-    addr[sockid].rwnd.expmsg[index] = 1;
-
+    
     strcpy(buff, addr[sockid].receive_buffer[index]);
-    bzero(addr[sockid].receive_buffer[index], MESSAGE_SIZE);
+    printf("Read - %s - %d - %d\n", buff, index, addr[sockid].rwnd.last_message);
 
-    printf("Read - %s - %d\n", buff, addr[sockid].rwnd.window_size);
+    bzero(addr[sockid].receive_buffer[index], MESSAGE_SIZE);
 
     shmdt(addr);
     semunlock(semid, sockid);
@@ -173,45 +178,4 @@ void k_close(int sockid) {
     shmdt(bind_addr);
 }
 
-// int main(int argc, char * argv[]) {
-//     // Socket creation and close
-//     int sock = k_socket(AF_INET, SOCK_KTP, 0);
-//     printf("%d\n", sock);
-
-//     struct sockaddr_in server, client;
-
-//     server.sin_family = AF_INET;
-//     server.sin_addr.s_addr = INADDR_ANY;
-    
-//     client.sin_family = AF_INET;
-//     client.sin_addr.s_addr = inet_addr("127.0.0.1");
-    
-//     if (argc > 1) {
-//         server.sin_port = htons(10000);
-//         client.sin_port = htons(5000);
-//     } else {
-//         server.sin_port = htons(5000);
-//         client.sin_port = htons(10000);
-//     }
-
-//     int bind_status = k_bind(sock, &server, &client);
-//     printf("Bind Error - %d\n", bind_status);
-
-//     if (argc == 1) { 
-//         for (int i=1; i<=20; i++) {
-//             char mess[512];
-//             bzero(mess, sizeof(mess));
-//             sprintf(mess, "Hello World %d", i);
-//             printf("%d\n", k_sendto(sock, &client, mess));
-//             if (i == 10) sleep(2);
-//         }
-//         sleep(10);
-//     } else {
-//         char buff[MESSAGE_SIZE];
-//         sleep(5);
-//         for(int i=0; i<20; i++) while(k_recvfrom(sock, &client, buff)<0);
-//         sleep(5);
-//     }
-
-//     k_close(sock);
-// }
+#endif

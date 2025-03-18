@@ -3,7 +3,10 @@
 int main() {
     // Socket creation and close
     int sock = k_socket(AF_INET, SOCK_KTP, 0);
-    printf("%d\n", sock);
+    if (sock < 0) {
+        printf("No sockets found\n");
+        exit(0);
+    }
 
     struct sockaddr_in server, client;
 
@@ -17,18 +20,25 @@ int main() {
     client.sin_port = htons(5000);
 
     int bind_status = k_bind(sock, &server, &client);
-    printf("Bind Error - %d\n", bind_status);
+    if (bind_status) {
+        printf("Bind Error\n");
+        exit(0);
+    }
+
     char mess[512];
 
-    for (int i=1; i<=300; i++) {
-        bzero(mess, sizeof(mess));
-        sprintf(mess, "Hello World %d", i);
-        while(k_sendto(sock, &client, mess) < 0);
+    FILE * f = (FILE *) fopen("testfile.txt", "r");
+
+    while(fgets(mess, 511, f)) {
+        mess[511] = 0;
+        while(k_sendto(sock, mess, sizeof(mess), 0, &client, sizeof(client)) < 0);
+        bzero(mess, 512);
     }
+
+    fclose(f);
 
     bzero(mess, sizeof(mess));
     sprintf(mess, "END");
-    while(k_sendto(sock, &client, mess) < 0);
-    
-    sleep(10);
+    while(k_sendto(sock, mess, sizeof(mess), 0, &client, sizeof(client)) < 0);
+    k_close(sock);
 }

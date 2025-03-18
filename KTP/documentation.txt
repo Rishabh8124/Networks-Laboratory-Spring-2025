@@ -1,0 +1,172 @@
+╔════════════════════════════════════════════════════════════════╗
+║                       DOCUMENTATION                            ║
+╚════════════════════════════════════════════════════════════════╝
+
+═══════════════════════ SECTION 1: STRUCTURES ═══════════════════════
+
+1. shared_memory_ktp
+   - isfree: 1 if free, 0 if allocated
+   - proc_id: Process ID of allocating process
+   - sockfd: Socket descriptor
+   - source: Source address
+   - destination: Destination address
+   - send_buffer[10][MESSAGE_SIZE]: Sending buffer
+   - receive_buffer[10][MESSAGE_SIZE]: Receiving buffer
+   - swnd: Sender window structure
+   - rwnd: Receiver window structure
+   - last_send: Timestamp of last message sent in S thread
+   - close_start: Timestamp of when the close function was called
+   - actual_count: Actual number of messages in buffer
+   - send_count: Number of messages sent
+
+   Usage: Basic structure of the shared memory for the KTP protocol.
+
+2. swnd (Sender Window)
+   - unack[10]: Array tracking unacknowledged packets
+   - receive_size: Available space in receiver's buffer
+   - window_size: Current window size
+   - seq: Next sequence number to send
+   - sb_start: Start index of sender buffer
+   - sb_end: End index of sender buffer
+   - retransmit_nospace: Count to send the same message again if the buffer is full
+
+   Usage: Manages sliding window protocol for sender
+
+3. rwnd (Receiver Window)
+   - seq_map[10]: Maps sequence numbers to buffer positions
+   - window_size: Available buffer space
+   - last_message: Last received message sequence number
+   - rb_start: Start index of receive buffer
+   - rb_end: End index of receive buffer
+
+   Usage: Manages sliding window protocol for receiver
+
+═══════════════════════ SECTION 2: FUNCTIONS ═══════════════════════
+
+KERNEL LEVEL FUNCTIONS:
+1. k_socket(__domain, __type, __protocol)
+   - Finds a free socket entry in shared memory
+   - Initializes socket entry with default values
+   - Returns socket descriptor or -1 on error
+
+2. k_bind(sockid, source, destination)
+   - Marks the socket for binding which is done by the Bind thread
+   - Returns 0 on success, -1 on failure
+   - BLOCKING CALL
+
+3. k_sendto(sockid, message, message_len, flags, destination, size)
+   - Pushes message into the send buffer if there is space
+   - Returns bytes sent or -1 on error
+
+4. k_recvfrom(sockid, message, message_len, flags, destination, size)
+   - Receives data from receive buffer if there is any
+   - Returns bytes received or -1 on error
+
+5. k_close(sockid)
+   - Marks the socket for closing which is done by the Bind thread
+   - Returns -1 after completion
+   - UNBLOCKING CALL
+
+THREADS:
+1. R thread (Receiver Thread)
+   - Handles incoming packets
+   - Manages acknowledgments
+   - Updates receive window
+   - Implements packet drop simulation
+
+2. S thread (Sender Thread)
+   - Handles packet transmission
+   - Manages retransmissions
+   - Implements timeout mechanism
+   - Uses ping when the receiver buffer is full
+
+3. Bind thread
+   - Binds the socket to the source and destination addresses
+   - Closes the socket if the close function is called
+   - Close is done after a timeout of 5 seconds
+   - Returns 0 on success, -1 on failure
+
+4. Garbage Thread
+   - Monitors socket usage
+   - Cleans up abandoned sockets
+   - Reinitializes socket entries
+   - Maintains system stability
+
+UTILITY FUNCTIONS:
+1. semlock() and semunlock(): Semaphore operations
+2. dropout(): Simulates packet loss
+3. check_send_timeout(): Checks transmission timeouts
+4. check_resend_timeout(): Checks retransmission timeouts
+5. check_close_timeout(): Checks close timeout
+6. max(): Returns the maximum of two values
+7. thread_close(): Exits the thread
+8. __close_ktp__(): Closes the KTP protocol
+9. __init_ktp__(): Initializes the KTP protocol
+
+═══════════════════════ SECTION 3: IMPORTANT IMPLEMENTATION DETAILS ═══════════════════════
+
+1. S thread -
+   - Sends all the messages available in the send buffer to the receiver if there is space in the receiver buffer
+      - Number of messages sent = min(window size, number of messages in the send buffer)
+   - If the receiver buffer is full, it sends a ping (random message with previous sequence number)
+   - The ping message works with a increasing sequence of timeouts.
+
+2. R thread -
+   - Receives all the messages available in the socket.
+   - If the message is not in the receiver window, it is discarded.
+   - If the message is in the receiver window and the sequence number is the expected message, it is acknowledged along with the consecutive messages that were received before it.
+   - If the message is in the receiver window and the sequence number is not the expected message, it is received in the receive buffer but no acknowledgment is sent.
+   - If the message is a duplicate, it is acknowledged.
+   - If the message is a ping, it is considered as a duplicate and acknowledgment is sent.
+   - If the acknowledgement is received for a message, the message is removed from the send buffer.
+   - Cumulative acknowledgements mechanism has been implemented, i.e. if the acknowledgement is received for a message, all the previous messages are also acknowledged.
+
+3. Bind thread -
+   - A separate shared memory was created for the implementing the bind and close functions.
+   - It works similar to the S thread, sleeps an wakes up after a time interval.
+   - If the value set is greater than 0, it represents the bind function and then the value of bind is stored in the shared memory.
+   - If the value set is -10, it represents the close function and then the value of time is stored in the shared memory and the value is changed to -20.
+   - If the value is -20 and the timeout happened, the socket is closed.
+
+4. Garbage thread -
+   - Monitors the socket usage
+   - Cleans up abandoned sockets
+   - Reinitializes socket entries
+
+5. Buffer Management -
+   - The buffer has been implemented as a circular buffer like the Producer consumer problem(but with a resolved approach).
+
+═══════════════════════ SECTION 4: DATA PACKET FORMAT ═══════════════════════
+"ABCDEF...."
+A - Message type (0 - data, 1 - ping)
+BCD - Sequence number
+EF - Window size(in case of acknowledgement)
+EFGH... - Message data (in case of message)
+
+═══════════════════════ SECTION 5: PERFORMANCE TABLE ═══════════════════════
+
+┌──────────────┬─────────────────┬────────────────┬───────────┐
+│   P Value    │ Total Messages  │ Transmissions  │   Ratio   │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.00      │       203       │       203      │   1.00    │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.05      │       203       │       331      │   1.62    │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.10      │       203       │       341      │   1.67    │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.15      │       203       │       419      │   2.06    │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.20      │       203       │       557      │   2.74    │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.25      │       203       │       568      │   2.79    │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.30      │       203       │       608      │   2.99    │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.35      │       203       │       703      │   3.46    │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.40      │       203       │       850      │   4.18    │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.45      │       203       │       1014     │   4.99    │
+├──────────────┼─────────────────┼────────────────┼───────────┤
+│    0.50      │       203       │       1157     │   5.69    │
+└──────────────┴─────────────────┴────────────────┴───────────┘

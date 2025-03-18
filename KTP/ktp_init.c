@@ -1,12 +1,19 @@
 // Name - S.Rishabh
 // Roll number - 22CS10058
 
-/*
-TO BE IMPLEMENTED/RECTIFIED -
-    -> Error messages
-*/
-
 #include "ktp_structures.h"
+
+#define probablility 0.15
+
+void semlock(int semid, int semnum) {
+    struct sembuf p = {semnum, -1, SEM_UNDO};
+    semop(semid, &p, 1);
+}
+
+void semunlock(int semid, int semnum) {
+    struct sembuf p = {semnum, 1, SEM_UNDO};
+    semop(semid, &p, 1);
+}
 
 void __close_ktp__();
 pthread_t R, S, Bind, Garbage;
@@ -16,13 +23,12 @@ int max(int a, int b) {
 }
 
 void thread_close(int signal) {
-    printf("Bye\n");
     pthread_exit(NULL);
 }
 
 int dropout() {
-    int i = rand()%10;
-    return (i<3);
+    int i = rand()%100;
+    return (i<((int)(probablility*100)));
 }
 
 int check_send_timeout(struct timeval * last_send) {
@@ -31,6 +37,26 @@ int check_send_timeout(struct timeval * last_send) {
 
     int udiff = (curr.tv_sec - last_send->tv_sec)*1e6 + (curr.tv_usec-last_send->tv_usec);
     if (udiff >= 2*TIMEOUT_HALF) {
+        return 1;
+    } else return 0;
+}
+
+int check_resend_timeout(struct timeval * last_send, int count) {
+    struct timeval curr;
+    gettimeofday(&curr, NULL);
+
+    int udiff = (curr.tv_sec - last_send->tv_sec)*1e6 + (curr.tv_usec-last_send->tv_usec);
+    if (udiff >= 2*TIMEOUT_HALF*count) {
+        return 1;
+    } else return 0;
+}
+
+int check_close_timeout(struct timeval * last_send) {
+    struct timeval curr;
+    gettimeofday(&curr, NULL);
+
+    int udiff = (curr.tv_sec - last_send->tv_sec)*1e6 + (curr.tv_usec-last_send->tv_usec);
+    if (udiff >= 50*TIMEOUT_HALF) {
         return 1;
     } else return 0;
 }
@@ -65,7 +91,14 @@ void * R_thread() {
             if (addr[i].isfree == 0 && FD_ISSET(addr[i].sockfd, &fds)) {
                 char buff[520];
                 bzero(buff, sizeof(buff));
-                recvfrom(addr[i].sockfd, buff, 520, 0, NULL, NULL);
+                struct sockaddr_in client;
+                int size;
+                recvfrom(addr[i].sockfd, buff, 520, 0, (struct sockaddr *)&client, &size);
+
+                if ((addr[i].destination.sin_addr.s_addr != client.sin_addr.s_addr) || (addr[i].destination.sin_port != client.sin_port)) {
+                    semunlock(semid, i);
+                    continue;
+                }
 
                 if (!dropout()) {
                     int seq;
@@ -75,11 +108,9 @@ void * R_thread() {
                     seq_number[2] = buff[3];
                     seq_number[3] = '\0';
                     seq = atoi(seq_number);
-                    // strcpy(addr[i].receive_buffer, buff);
-                    // printf("Received buffer - %s\n", buff);
 
                     if (buff[0] == '0') {
-                        // Check calc for old message - Old message always means out of window
+                        // Check calc for old message (21 messaage window size before the last message received)
                         int old_start = addr[i].rwnd.last_message-21;
                         if (old_start < 1) old_start += 255;
                         int front = addr[i].rwnd.last_message;
@@ -105,8 +136,6 @@ void * R_thread() {
                             int index = (addr[i].rwnd.rb_end + 1)%10;
                             strcpy(addr[i].receive_buffer[index], &buff[4]);
 
-                            printf("\n%d\n", seq);
-
                             do {
                                 addr[i].rwnd.rb_end = (addr[i].rwnd.rb_end + 1) % 10;
                                 addr[i].rwnd.seq_map[index] = 0;
@@ -124,8 +153,6 @@ void * R_thread() {
                                 buff[5] = '0'+(addr[i].rwnd.window_size)%10;
                                 addr[i].rwnd.last_message = seq;
 
-                                printf("Sending Acknowledgement - %s - %d - %s\n", buff, addr[i].rwnd.window_size, addr[i].receive_buffer[index]);
-
                                 sendto(addr[i].sockfd, buff, strlen(buff)+1, 0, (struct sockaddr *) &addr[i].destination, sizeof(addr[i].destination));
                                 index = (addr[i].rwnd.rb_end+1)%10;
                             } while(addr[i].rwnd.seq_map[index] == ((seq+1)%256)+(seq == 255));
@@ -140,28 +167,48 @@ void * R_thread() {
                             }
                         }
                     } else {    // Ack Message
-                        if (seq == addr[i].swnd.seq) {
-                            // printf("Received acknowledgement - %d\n", seq);
-                            addr[i].swnd.receive_size = (buff[4]-'0')*10+(buff[5]-'0');
-                            addr[i].swnd.seq++;
-                            addr[i].swnd.seq%=256;
-                            if (addr[i].swnd.seq == 0) addr[i].swnd.seq++;
-                            addr[i].swnd.sb_start++;
-                            addr[i].swnd.sb_start %= 10;
+                        int curr_window = 0;
+                        int front = addr[i].swnd.seq;
+                        int end = addr[i].swnd.seq + 9 - addr[i].swnd.window_size;
+                        end %= 256;
+                        if (end == 0) end++;
 
-                            bzero(&addr[i].send_buffer[addr[i].swnd.sb_start], sizeof(addr[i].send_buffer[0]));
-                            addr[i].swnd.unack[addr[i].swnd.sb_start] = 0;
-                            addr[i].swnd.window_size++;
+                        if (((end >= front) && (seq >= front && seq <= end)) || ((end < front) && (seq <= end || seq >= front))) curr_window = 1;
+
+                        if (curr_window) {
+                            // Calculate number of shifts
+                            int count = 1, x = front;
+                            while(x != front) {
+                                x++;
+                                count++;
+                            }
+                            x++;
+
+                            addr[i].swnd.receive_size = (buff[4]-'0')*10+(buff[5]-'0');
+                            if (addr[i].swnd.receive_size == 0) addr[i].swnd.retransmit_nospace = 5;
+                            else addr[i].swnd.retransmit_nospace = 0;
+
+                            while(count--) {
+                                addr[i].swnd.seq++;
+                                addr[i].swnd.seq%=256;
+                                if (addr[i].swnd.seq == 0) addr[i].swnd.seq++;
+                                addr[i].swnd.sb_start++;
+                                addr[i].swnd.sb_start %= 10;
+
+                                bzero(&addr[i].send_buffer[addr[i].swnd.sb_start], sizeof(addr[i].send_buffer[0]));
+                                addr[i].swnd.unack[addr[i].swnd.sb_start] = 0;
+                                addr[i].swnd.window_size++;
+                            }
                             
                         } else if ((seq == addr[i].swnd.seq-1) || (seq == 255 && (addr[i].swnd.seq == 0))) {
                             addr[i].swnd.receive_size = (buff[4]-'0')*10+(buff[5]-'0');
+                            if (addr[i].swnd.receive_size == 0) addr[i].swnd.retransmit_nospace += 5;
+                            else  addr[i].swnd.retransmit_nospace = 0;
                         }
                     }
-                
-                } else {
-                    // printf("Package dropped - %s\n", buff);
                 }
             }
+
             semunlock(semid, i);
         }
     }
@@ -204,15 +251,16 @@ void * S_thread() {
                         message[3] = '0'+(seq%10);
                         strcpy(&message[4], addr[i].send_buffer[start]);
 
-                        // printf("%d - %s\n", start, addr[i].send_buffer[start]);
                         fflush(stdout);
                         sendto(addr[i].sockfd, message, strlen(message), 0, (struct sockaddr *) &addr[i].destination, sizeof(addr[i].destination));
+                        addr[i].send_count++;
 
                         seq++;
                         seq%=256;
                         if (seq == 0) seq++;
                     }
-                } else {
+                } else if (check_resend_timeout(&addr[i].last_send, addr[i].swnd.retransmit_nospace)) {
+
                     char message[520];
                     bzero(message, 520);
 
@@ -222,7 +270,6 @@ void * S_thread() {
                     message[1] = '0'+(seq/100);
                     message[2] = '0'+(seq%100)/10;
                     message[3] = '0'+(seq%10);
-                    // printf("Receiver buffer full - %s\n", message);
                     fflush(stdout);
                     sendto(addr[i].sockfd, message, strlen(message), 0, (struct sockaddr *) &addr[i].destination, sizeof(addr[i].destination));
                 }
@@ -250,12 +297,20 @@ void * Bind_thread() {
             semlock(semid, i);
             semlock(semid, i+MAX_SOCKET_COUNT);
             if (addr[i] > 0) {
-                printf("Request found\n");
                 addr[i] = bind(shm_addr[i].sockfd, (struct sockaddr *) &shm_addr[i].source, sizeof(struct sockaddr));
             } else if (addr[i] == -10) {
+                addr[i] = -20;
+                gettimeofday(&shm_addr[i].close_start, NULL);
+            } else if (addr[i] == -20 && check_close_timeout(&shm_addr[i].close_start)) {
                 close(shm_addr[i].sockfd);
                 shm_addr[i].sockfd = socket(AF_INET, SOCK_DGRAM, 0);
                 addr[i] = 0;
+
+                printf("%d %d\n", shm_addr[i].actual_count, shm_addr[i].send_count);
+
+                bzero(&shm_addr[i].destination, sizeof(shm_addr[i].destination));
+                shm_addr[i].isfree = 1;
+                shm_addr[i].proc_id = 0;
             }
             semunlock(semid, i+MAX_SOCKET_COUNT);
             semunlock(semid, i);
@@ -280,7 +335,7 @@ void * Garbage_Clean_thread() {
             semlock(semid, i);
             semlock(semid, i+MAX_SOCKET_COUNT);
             if (addr[i].isfree == 0) {
-                if (kill(addr[i].proc_id, 0)) {
+                if (kill(addr[i].proc_id, 0) && shm_addr[i] == 0) {
                     shm_addr[i] = -10;
                     addr[i].isfree = 1;
                 }
@@ -360,8 +415,8 @@ void __close_ktp__(int signal_code) {
         semlock(semid, i);
         if (addr[i].isfree == 0) {
             if (kill(addr[i].proc_id, 0) == 0) {
-                semunlock(semid, i);
                 printf("Process %d is still accessing sockets\n", addr[i].proc_id);
+                semunlock(semid, i);
                 return;
             }
         }

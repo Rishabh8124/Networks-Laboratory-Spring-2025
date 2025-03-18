@@ -1,3 +1,6 @@
+// Name - S.Rishabh
+// Roll number - 22CS10058
+
 #ifndef KTP_STRUCTURE
 #define KTP_STRUCTURE
 
@@ -24,11 +27,14 @@
 #define TIMEOUT_HALF            100000
 #define BIND_TIMEOUT            10000
 
+// Timeout for sending thread is 200 ms, if 5 seconds need to be implemented, change the macro TIMEOUT_HALF to 2500000
+
 // swnd structure
 struct swnd {
     int unack[10];
     int receive_size;
     int window_size;
+    int retransmit_nospace;
     int seq;
     int sb_start;
     int sb_end;
@@ -36,6 +42,7 @@ struct swnd {
 
 typedef struct swnd sswnd;
 
+// rwnd structure
 struct rwnd {
     int seq_map[10];
     int window_size;
@@ -58,18 +65,12 @@ struct shared_memory_ktp {
     sswnd swnd;
     rrwnd rwnd;
     struct timeval last_send;
+    struct timeval close_start;
+
+    int actual_count;
+    int send_count;
 };
 
 typedef struct shared_memory_ktp shmktp;
-
-void semlock(int semid, int semnum) {
-    struct sembuf p = {semnum, -1, SEM_UNDO};
-    semop(semid, &p, 1);
-}
-
-void semunlock(int semid, int semnum) {
-    struct sembuf p = {semnum, 1, SEM_UNDO};
-    semop(semid, &p, 1);
-}
 
 #endif

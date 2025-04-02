@@ -1,0 +1,6 @@
+MAIL FROM: h@h (21-03-2025)
+DATA: hello my name is sadda suchith reddy
+~
+MAIL FROM: h@h (21-03-2025)
+DATA: 
+~

@@ -5,3 +5,6 @@ s:
 c:
 	@gcc client.c -o client
 	@./client
+
+clean:
+	rm -f server client results.txt

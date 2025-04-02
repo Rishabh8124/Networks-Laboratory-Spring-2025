@@ -22,4 +22,4 @@ init:
 	@./ktpinit
 
 clean:
-	@rm -f ktp.o libktp.a u1 u2 ktpinit
+	@rm -f ktp.o libktp.a u1 u2 ktpinit receive.txt

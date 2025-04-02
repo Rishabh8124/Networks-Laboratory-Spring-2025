@@ -1,0 +1,17 @@
+MAIL FROM: abc@gmail.com (21-03-2025)
+DATA: HELLO RISHAB;
+MY NAME IS G.M.M PRABHASH 
+How Are You?
+BYe..
+Please Reply~
+~
+MAIL FROM: bcd@gmail.com (21-03-2025)
+DATA: hi,.
+~
+MAIL FROM: bcd@gmail.com (21-03-2025)
+DATA: hello world
+~
+MAIL FROM: abc@gmail.com (21-03-2025)
+DATA: hell world
+hello world
+~
